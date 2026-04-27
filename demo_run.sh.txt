@@ -1,0 +1,134 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# --------- CONFIG ----------
+: "${EP:?Set EP to your OpenSearch VPC endpoint hostname, e.g.:
+  export EP='<YOUR.VPC.Region.es.amazonaws.com>'}"
+INDEX="pii-test"
+REGION="us-east-1"
+
+pause() { read -r -p "${1:-Press Enter to continue…}"; }
+
+say() {
+  printf "\n\033[1m%s\033[0m\n" "$*"
+}
+
+# --------- 0) Health checks ----------
+say "0) Health checks (curl + signed info)"
+echo "EP=$EP"
+echo "-> curl HEAD (expect 401/403, not timeout)"
+curl -4 -sS -m 8 -I "https://$EP/" || {
+  echo "curl failed – check SGs/VPC DNS/endpoint."; exit 1; }
+pause
+
+python3 - <<PY
+import os, boto3
+from opensearchpy import OpenSearch, RequestsHttpConnection, AWSV4SignerAuth
+host=os.environ["EP"]; region="${REGION}"; service="es"
+auth=AWSV4SignerAuth(boto3.Session().get_credentials(), region, service)
+c=OpenSearch(hosts=[{"host":host,"port":443}], http_auth=auth, use_ssl=True, verify_certs=True,
+             connection_class=RequestsHttpConnection)
+info=c.info()
+print("Cluster OK:", info.get("version",{}).get("number"), info.get("tagline"))
+PY
+pause "Health looks good. Press Enter to start the demo…"
+
+# --------- 1) Current state / counts ----------
+say "1) Current counts in ${INDEX}"
+python3 - <<PY
+import os, boto3
+from opensearchpy import OpenSearch, RequestsHttpConnection, AWSV4SignerAuth
+host=os.environ["EP"]; region="${REGION}"; service="es"; idx="${INDEX}"
+auth=AWSV4SignerAuth(boto3.Session().get_credentials(), region, service)
+c=OpenSearch(hosts=[{"host":host,"port":443}], http_auth=auth, use_ssl=True, verify_certs=True,
+             connection_class=RequestsHttpConnection)
+cnt=lambda q=None: c.count(index=idx, body=(q or {"query":{"match_all":{}}}))["count"]
+total=cnt()
+scanned=cnt({"query":{"exists":{"field":"pii_flag"}}})
+flagged=cnt({"query":{"term":{"pii_flag":True}}})
+print(f"Total: {total}  Scanned: {scanned}  Flagged: {flagged}")
+PY
+pause
+
+# --------- 2) Optional: add more dummy docs ----------
+say "2) (Optional) Add more dummy docs to '${INDEX}'"
+read -r -p "Add more docs now? [y/N] " yn
+if [[ "${yn:-N}" =~ ^[Yy]$ ]]; then
+  if [[ -f "./add_more_data.py" ]]; then
+    python3 ./add_more_data.py
+  else
+    say "add_more_data.py not found – skipping."
+  fi
+else
+  echo "Skipping add."
+fi
+pause
+
+# --------- 3) Coverage BEFORE scan ----------
+say "3) Coverage BEFORE scan (how many have pii_flag set)"
+python3 - <<PY
+import os, boto3
+from opensearchpy import OpenSearch, RequestsHttpConnection, AWSV4SignerAuth
+host=os.environ["EP"]; region="${REGION}"; service="es"; idx="${INDEX}"
+auth=AWSV4SignerAuth(boto3.Session().get_credentials(), region, service)
+c=OpenSearch(hosts=[{"host":host,"port":443}], http_auth=auth, use_ssl=True, verify_certs=True,
+             connection_class=RequestsHttpConnection)
+cnt=lambda q=None: c.count(index=idx, body=(q or {"query":{"match_all":{}}}))["count"]
+total=cnt()
+scanned=cnt({"query":{"exists":{"field":"pii_flag"}}})
+print(f"Coverage BEFORE: {scanned}/{total} scanned")
+PY
+pause
+
+# --------- 4) Run Comprehend detection (detect-only) ----------
+say "4) Run Comprehend PII detection (detect-only)"
+if [[ -f "./detect_pii.py" ]]; then
+  python3 ./detect_pii.py
+else
+  say "detect_pii.py not found – skipping."
+fi
+pause
+
+# --------- 5) Coverage AFTER scan ----------
+say "5) Coverage AFTER scan"
+python3 - <<PY
+import os, boto3
+from opensearchpy import OpenSearch, RequestsHttpConnection, AWSV4SignerAuth
+host=os.environ["EP"]; region="${REGION}"; service="es"; idx="${INDEX}"
+auth=AWSV4SignerAuth(boto3.Session().get_credentials(), region, service)
+c=OpenSearch(hosts=[{"host":host,"port":443}], http_auth=auth, use_ssl=True, verify_certs=True,
+             connection_class=RequestsHttpConnection)
+cnt=lambda q=None: c.count(index=idx, body=(q or {"query":{"match_all":{}}}))["count"]
+total=cnt()
+scanned=cnt({"query":{"exists":{"field":"pii_flag"}}})
+flagged=cnt({"query":{"term":{"pii_flag":True}}})
+print(f"Coverage AFTER:  {scanned}/{total} scanned")
+print(f"Flagged as PII: {flagged}")
+PY
+pause
+
+# --------- 6) Breakdown by PII type ----------
+say "6) Breakdown by PII type"
+python3 - <<PY
+import os, boto3
+from opensearchpy import OpenSearch, RequestsHttpConnection, AWSV4SignerAuth
+host=os.environ["EP"]; region="${REGION}"; service="es"; idx="${INDEX}"
+auth=AWSV4SignerAuth(boto3.Session().get_credentials(), region, service)
+c=OpenSearch(hosts=[{"host":host,"port":443}], http_auth=auth, use_ssl=True, verify_certs=True,
+             connection_class=RequestsHttpConnection)
+resp=c.search(index=idx, body={"size":0,"aggs":{"t":{"terms":{"field":"pii_types","size":20}}}})
+b=resp.get("aggregations",{}).get("t",{}).get("buckets",[])
+if not b: print("No PII types found.")
+for x in b: print(f"{x['key']}: {x['doc_count']}")
+PY
+pause
+
+# --------- 7) Show flagged docs (provenance) ----------
+say "7) Show flagged docs with key fields"
+if [[ -f "./view_flagged.py" ]]; then
+  python3 ./view_flagged.py --limit 10
+else
+  say "view_flagged.py not found – skipping."
+fi
+
+say "Done. I'm ready to take questions."

@@ -1,0 +1,29 @@
+# 1) Paste your endpoint exactly (hostname only)
+EP='<YOUR VPC Link>'
+echo "EP=$EP"
+
+# 2) DNS resolve
+getent hosts "$EP" || host "$EP"
+
+# 3) Basic reachability (expect headers like 401/403 — that means networking is good)
+curl -4 -sS -m 8 -I "https://$EP/"
+
+# 4) (Re)ensure libs are present (safe to re-run)
+sudo dnf install -y python3-pip || true
+python3 -m pip install -q --upgrade pip boto3 opensearch-py requests-aws4auth
+
+# 5) Signed request to OpenSearch (prints cluster info on success)
+python3 - <<'PY'
+import os, boto3
+from opensearchpy import OpenSearch, RequestsHttpConnection, AWSV4SignerAuth
+region="us-east-1"; service="es"; host=os.environ["EP"]  # hostname only
+creds=boto3.Session().get_credentials()
+auth=AWSV4SignerAuth(creds, region, service)
+client=OpenSearch(
+    hosts=[{"host":host,"port":443}],
+    http_auth=auth, use_ssl=True, verify_certs=True,
+    connection_class=RequestsHttpConnection,
+)
+print(client.info())
+PY
+
