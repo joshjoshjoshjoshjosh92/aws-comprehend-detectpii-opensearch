@@ -1,0 +1,13 @@
+# AWS SDK
+boto3>=1.26.0
+botocore>=1.29.0
+
+# OpenSearch client
+opensearch-py>=2.2.0
+
+# Request signing (AWS SigV4 for OpenSearch)
+requests>=2.28.0
+requests-aws4auth>=1.2.3
+
+# Utilities
+python-dotenv>=1.0.0
