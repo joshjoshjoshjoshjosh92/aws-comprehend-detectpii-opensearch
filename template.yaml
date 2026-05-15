@@ -28,8 +28,21 @@ Parameters:
     Default: ''
     Description: (Optional) EC2 key pair for SSH access. Leave blank for SSM-only access.
 
+  DeploymentMode:
+    Type: String
+    Default: ec2
+    AllowedValues: [ec2, serverless]
+    Description: "ec2 = always-on processor. serverless = Lambda + EventBridge (scales to zero cost)."
+
+  ScanSchedule:
+    Type: String
+    Default: rate(5 minutes)
+    Description: (Serverless mode) How often to scan for unscanned docs. Use 'rate(N minutes)' or cron.
+
 Conditions:
   HasKeyPair: !Not [!Equals [!Ref KeyPairName, '']]
+  IsEC2Mode: !Equals [!Ref DeploymentMode, 'ec2']
+  IsServerlessMode: !Equals [!Ref DeploymentMode, 'serverless']
 
 Resources:
 
@@ -284,6 +297,7 @@ Resources:
 
   EC2Instance:
     Type: AWS::EC2::Instance
+    Condition: IsEC2Mode
     DependsOn: OpenSearchDomain
     Properties:
       InstanceType: !Ref InstanceType
@@ -319,19 +333,146 @@ Resources:
           # Signal ready
           echo "PII Detect setup complete" > /home/ec2-user/setup-complete.txt
 
+  # ─── Serverless (Lambda + EventBridge) ────────────────────────────────────
+
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Condition: IsServerlessMode
+    Properties:
+      RoleName: pii-detect-lambda-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: pii-detect-lambda-policy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ComprehendReadOnly
+                Effect: Allow
+                Action:
+                  - comprehend:DetectPiiEntities
+                  - comprehend:ContainsPiiEntities
+                Resource: '*'
+              - Sid: OpenSearchWrite
+                Effect: Allow
+                Action:
+                  - es:ESHttpPost
+                  - es:ESHttpPut
+                  - es:ESHttpGet
+                Resource: !Sub 'arn:aws:es:${AWS::Region}:${AWS::AccountId}:domain/pii-detect-domain/*'
+              - Sid: S3Read
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource: '*'
+              - Sid: Logging
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+
+  LambdaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Condition: IsServerlessMode
+    Properties:
+      GroupDescription: PII Detect Lambda
+      VpcId: !Ref VPC
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: HTTPS for Comprehend and OpenSearch
+
+  LambdaIngressToOpenSearch:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: IsServerlessMode
+    Properties:
+      GroupId: !Ref OpenSearchSecurityGroup
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      SourceSecurityGroupId: !Ref LambdaSecurityGroup
+
+  PiiDetectFunction:
+    Type: AWS::Lambda::Function
+    Condition: IsServerlessMode
+    Properties:
+      FunctionName: pii-detect-processor
+      Runtime: python3.12
+      Handler: handler.handler
+      Timeout: 300
+      MemorySize: 512
+      Role: !GetAtt LambdaRole.Arn
+      VpcConfig:
+        SubnetIds:
+          - !Ref PrivateSubnet
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+      Environment:
+        Variables:
+          OPENSEARCH_ENDPOINT: !GetAtt OpenSearchDomain.DomainEndpoint
+          OPENSEARCH_INDEX: pii-test
+          PII_HANDLING_MODE: REDACT
+          PII_CONFIDENCE_THRESHOLD: '0.7'
+          SCAN_BATCH_SIZE: '25'
+      Code:
+        ZipFile: |
+          # Deploy lambda/handler.py via CI/CD or S3 upload
+          def handler(event, context):
+              return {"status": "replace with lambda/handler.py"}
+
+  ScanScheduleRule:
+    Type: AWS::Events::Rule
+    Condition: IsServerlessMode
+    Properties:
+      Name: pii-detect-scan-schedule
+      ScheduleExpression: !Ref ScanSchedule
+      State: ENABLED
+      Targets:
+        - Id: pii-detect-lambda
+          Arn: !GetAtt PiiDetectFunction.Arn
+          Input: '{"detail-type": "Scheduled Event", "source": "aws.events"}'
+
+  ScanSchedulePermission:
+    Type: AWS::Lambda::Permission
+    Condition: IsServerlessMode
+    Properties:
+      FunctionName: !Ref PiiDetectFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt ScanScheduleRule.Arn
+
 Outputs:
   OpenSearchEndpoint:
     Description: OpenSearch domain endpoint (VPC)
     Value: !GetAtt OpenSearchDomain.DomainEndpoint
 
   EC2InstanceId:
+    Condition: IsEC2Mode
     Description: EC2 instance ID (connect via SSM Session Manager)
     Value: !Ref EC2Instance
 
   SSMConnectCommand:
+    Condition: IsEC2Mode
     Description: Command to connect to the EC2 instance
     Value: !Sub 'aws ssm start-session --target ${EC2Instance} --region ${AWS::Region}'
 
+  LambdaFunctionArn:
+    Condition: IsServerlessMode
+    Description: Lambda function ARN for PII detection
+    Value: !GetAtt PiiDetectFunction.Arn
+
   RunDemoCommand:
+    Condition: IsEC2Mode
     Description: Run this after connecting via SSM
     Value: 'cd /home/ec2-user/pii-detect && python3 run_demo.py'

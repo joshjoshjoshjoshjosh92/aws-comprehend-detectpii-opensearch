@@ -10,8 +10,15 @@ from config import (
 from os_client import get_client
 
 
+# Cached Comprehend client (avoid creating per-call)
+_comprehend_client = None
+
+
 def _get_comprehend():
-    return boto3.client("comprehend", region_name=REGION)
+    global _comprehend_client
+    if _comprehend_client is None:
+        _comprehend_client = boto3.client("comprehend", region_name=REGION)
+    return _comprehend_client
 
 
 def contains_pii(text: str) -> bool:

@@ -206,20 +206,41 @@ Comprehend detects the following entity types (configurable in `config.py`):
 
 ## Cost Optimization
 
-This solution minimizes Comprehend costs through a two-tier detection strategy:
+This solution minimizes costs through three strategies:
 
-1. **Pre-filter with `ContainsPiiEntities`** (~$0.000025/unit) — Cheap check to determine if a document likely contains PII
-2. **Full detection with `DetectPiiEntities`** (~$0.0001/unit) — Only called on documents that pass the pre-filter
+### 1. Two-Tier Detection (Real-Time)
 
-For a corpus that is 30% PII / 70% clean, this reduces Comprehend costs by ~60% compared to calling `DetectPiiEntities` on every document.
+- **Pre-filter with `ContainsPiiEntities`** (~$0.000025/unit) — Cheap check first
+- **Full detection with `DetectPiiEntities`** (~$0.0001/unit) — Only on docs that contain PII
 
-| Docs | Naïve Cost | Optimized Cost | Savings |
-|------|-----------|----------------|--------|
-| 1,000 | $0.10 | $0.055 | 45% |
-| 10,000 | $1.00 | $0.55 | 45% |
-| 100,000 | $10.00 | $5.50 | 45% |
+### 2. Async Batch Jobs (Large Volumes)
 
-*Assumes 30% PII rate. Higher clean-doc ratios = more savings.*
+For 10K+ documents, use `batch_detect.py` which leverages Comprehend async jobs at **50% the cost** of real-time API with no throttling limits.
+
+```bash
+python batch_detect.py --bucket my-bucket --role-arn arn:aws:iam::123456789:role/comprehend-role
+```
+
+### 3. Serverless Mode (Zero Idle Cost)
+
+Deploy with `DeploymentMode=serverless` to use Lambda + EventBridge instead of EC2. Pay only when documents are being scanned.
+
+```bash
+aws cloudformation deploy --template-file template.yaml --stack-name pii-detect \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --parameter-overrides DeploymentMode=serverless ScanSchedule="rate(5 minutes)"
+```
+
+### Cost Comparison
+
+| Scenario (10K docs, 30% PII) | Compute | Comprehend | Total/month |
+|------------------------------|---------|------------|-------------|
+| Naïve (EC2 + DetectPii all) | ~$15 EC2 | $1.00 | ~$16.00 |
+| **Optimized EC2** (pre-filter) | ~$15 EC2 | $0.55 | ~$15.55 |
+| **Serverless** (Lambda + pre-filter) | ~$0.10 | $0.55 | ~$0.65 |
+| **Batch job** (async, pre-filter) | ~$0.10 | $0.28 | ~$0.38 |
+
+*Serverless + batch = 97% cheaper than naïve approach.*
 
 ---
 
