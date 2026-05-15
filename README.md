@@ -8,27 +8,95 @@ A production-ready reference architecture and implementation for automated PII d
 
 ## Architecture Overview
 
-This solution intercepts documents being indexed into OpenSearch, routes them through Amazon Comprehend for PII entity detection, redacts or flags identified PII, and stores the sanitized output — all without requiring changes to the upstream ingestion pipeline.
+This solution intercepts documents before they reach OpenSearch, routes them through a cost-optimized two-tier Amazon Comprehend detection pipeline, redacts or flags identified PII, and indexes only sanitized output — all deployable in three modes from a single CloudFormation template.
+
+### High-Level Architecture
 
 ```
-┌─────────────────┐     ┌──────────────────┐     ┌─────────────────────────┐
-│   Data Source   │────▶│    EC2 Instance   │────▶│  Amazon OpenSearch      │
-│  (S3 / Stream)  │     │  (PII Processor)  │     │  (Sanitized Index)      │
-└─────────────────┘     └────────┬─────────┘     └─────────────────────────┘
-                                  │
-                                  ▼
-                         ┌──────────────────┐
-                         │Amazon Comprehend  │
-                         │ PII Detection API │
-                         └──────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                          DEPLOYMENT MODES                                     │
+│                                                                              │
+│  ┌─────────────┐    ┌─────────────────┐    ┌─────────────────────────────┐  │
+│  │  EC2 Mode   │    │ Serverless Mode  │    │       Batch Mode            │  │
+│  │  (Always-on)│    │ (Zero idle cost) │    │   (50% cheaper API)         │  │
+│  │             │    │                  │    │                             │  │
+│  │  Python     │    │  Lambda          │    │  S3 ──▶ Comprehend Job     │  │
+│  │  Processor  │    │  + EventBridge   │    │         (Async)             │  │
+│  │  on EC2     │    │  + S3 Triggers   │    │                             │  │
+│  └──────┬──────┘    └────────┬─────────┘    └──────────────┬──────────────┘  │
+│         │                    │                              │                 │
+│         └────────────────────┼──────────────────────────────┘                 │
+│                              ▼                                                │
+│              ┌───────────────────────────────┐                                │
+│              │   Two-Tier Detection Engine    │                                │
+│              │                               │                                │
+│              │  1. ContainsPiiEntities        │  ← Cheap pre-filter            │
+│              │     ($0.000025/unit)           │    "Does this have PII?"       │
+│              │         │                     │                                │
+│              │    NO ──┘──── YES             │                                │
+│              │    │           │              │                                │
+│              │    ▼           ▼              │                                │
+│              │  [clean]  2. DetectPiiEntities│  ← Full detection (only if PII)│
+│              │              ($0.0001/unit)   │    Get spans + types            │
+│              │                │              │                                │
+│              │                ▼              │                                │
+│              │           3. Redact/Flag      │                                │
+│              └───────────────┬───────────────┘                                │
+│                              │                                                │
+│                              ▼                                                │
+│              ┌───────────────────────────────┐                                │
+│              │    Amazon OpenSearch Service   │                                │
+│              │    (Private Subnet, VPC)       │                                │
+│              │                               │                                │
+│              │  • Sanitized/redacted text     │                                │
+│              │  • pii_flag: true/false        │                                │
+│              │  • pii_types: [NAME, SSN...]   │                                │
+│              │  • pii_count: N                │                                │
+│              │  • pii_scanned_at: <timestamp> │                                │
+│              └───────────────────────────────┘                                │
+└──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-**Core components:**
+### Security & Network Layer
 
-- **EC2 (Processing Layer)** — Python-based processor running on EC2 that orchestrates document ingestion, Comprehend API calls, and redaction logic before indexing into OpenSearch
-- **Amazon Comprehend** — NLP service used to detect PII entities (names, SSNs, account numbers, dates of birth, addresses, etc.) via the `detect_pii_entities` API
-- **Amazon OpenSearch Service** — Target search/analytics store receiving only sanitized, redacted documents
-- **IAM Roles** — Least-privilege roles scoped to Comprehend read and OpenSearch write permissions
+```
+┌─────────────────────────────────────────────────────────┐
+│  VPC (Private)                                          │
+│                                                         │
+│  ┌─────────────────┐       ┌────────────────────────┐  │
+│  │ EC2 / Lambda    │──443──▶│ OpenSearch (VPC)       │  │
+│  │ (Processor)     │       │ • TLS 1.2 enforced     │  │
+│  └────────┬────────┘       │ • Encryption at rest   │  │
+│           │                │ • Node-to-node encrypt │  │
+│           │ 443            └────────────────────────┘  │
+│           ▼                                            │
+│  ┌─────────────────┐       ┌────────────────────────┐  │
+│  │ NAT Gateway     │       │ CloudWatch Logs        │  │
+│  │ (Outbound only) │       │ • VPC Flow Logs (30d)  │  │
+│  └────────┬────────┘       │ • Audit trail (90d)    │  │
+│           │                └────────────────────────┘  │
+└───────────┼─────────────────────────────────────────────┘
+            │
+            ▼
+   ┌─────────────────┐
+   │ Comprehend API  │  (SigV4 signed, TLS)
+   │ SSM Endpoint    │
+   └─────────────────┘
+```
+
+### Core Components
+
+| Component | Role |
+|-----------|------|
+| **Amazon Comprehend** | NLP-based PII detection via `ContainsPiiEntities` (pre-filter) and `DetectPiiEntities` (full detection) |
+| **Amazon OpenSearch Service** | Document store receiving only sanitized, redacted documents with PII metadata |
+| **AWS Lambda** (serverless mode) | Event-driven processor triggered by S3 uploads or EventBridge schedule |
+| **Amazon EC2** (EC2 mode) | Always-on processor with SSM access for development and demos |
+| **Amazon S3** (batch mode) | Staging area for Comprehend async batch jobs |
+| **Amazon EventBridge** | Scheduled triggers for periodic scanning of unscanned documents |
+| **AWS CloudFormation** | One-click deployment of entire stack |
+| **Amazon CloudWatch** | VPC Flow Logs, audit logging, operational metrics |
+| **AWS IAM** | Least-privilege roles — Comprehend read-only, OpenSearch write-only |
 
 ---
 
