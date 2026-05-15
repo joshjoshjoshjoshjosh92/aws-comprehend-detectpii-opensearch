@@ -34,6 +34,33 @@ This solution intercepts documents being indexed into OpenSearch, routes them th
 
 ## Quick Start
 
+### One-Click Deploy
+
+Deploy the full stack (OpenSearch + EC2 + IAM + networking) in one command:
+
+```bash
+aws cloudformation deploy \
+  --template-file template.yaml \
+  --stack-name pii-detect \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --region us-east-1
+```
+
+Then connect and run:
+
+```bash
+INSTANCE_ID=$(aws cloudformation describe-stacks --stack-name pii-detect \
+  --query 'Stacks[0].Outputs[?OutputKey==`EC2InstanceId`].OutputValue' --output text)
+aws ssm start-session --target $INSTANCE_ID --region us-east-1
+
+# On the instance:
+cd /home/ec2-user/pii-detect && python3 run_demo.py
+```
+
+See [QUICKSTART.md](QUICKSTART.md) for detailed options including console deploy and bring-your-own-infra.
+
+### Existing Infrastructure
+
 ```bash
 git clone https://github.com/<your-org>/aws-comprehend-detectpii-opensearch.git
 cd aws-comprehend-detectpii-opensearch
