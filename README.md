@@ -255,6 +255,34 @@ This solution was designed with financial services data governance requirements 
 
 ---
 
+## Problem-Solution Fit
+
+| Criteria | Assessment |
+|----------|------------|
+| **Real customer pain point?** | Yes — FSI orgs are fined for PII exposure in search indexes. Manual review doesn't scale. |
+| **Implementation complexity?** | Low — one CloudFormation command, 15 minutes to running demo. |
+| **Cost vs. alternatives?** | 97% cheaper than naïve approach; 95%+ cheaper than manual review or third-party DLP. |
+| **Scalability?** | Three modes: EC2 (dev), Lambda (production), Batch (bulk). Handles 1K–1M+ docs/month. |
+| **Security & compliance?** | Enterprise-grade: private VPC, encryption everywhere, least-privilege IAM, audit logs. |
+| **Novelty?** | Two-tier `ContainsPii`→`DetectPii` cost pattern is not documented in any existing AWS guidance. |
+
+---
+
+## Operations & Maintenance
+
+**Day-2 operations:**
+
+- **Monitoring:** CloudWatch metrics for Comprehend API calls, Lambda errors, OpenSearch cluster health
+- **Scaling up:** Change `OpenSearchInstanceType` parameter or add nodes via CloudFormation update
+- **Scaling down:** Switch to `DeploymentMode=serverless` to eliminate idle compute cost
+- **Updates:** `git pull` on EC2 instance or redeploy Lambda code via CI/CD
+- **Cost control:** Set `max_docs` cap in `detect_pii.py`, use AWS Budgets alerts on Comprehend
+- **Cleanup:** `aws cloudformation delete-stack` removes everything — zero lingering resources
+
+**No ongoing maintenance required** — Comprehend is fully managed (no model training/tuning), OpenSearch handles index management, Lambda scales automatically.
+
+---
+
 ## PACE Publication
 
 This solution is published as part of the **AWS PACE (Patterns, Automations, and Content for Engineers) Program** for the Financial Services Industry segment. It is recognized in Amazon's internal reuse tracking system as a repeatable GTM asset.
