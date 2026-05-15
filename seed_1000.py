@@ -1,10 +1,7 @@
 """Generate and index 1000 realistic test documents with varied PII patterns."""
-import os
+import json
 import random
 import string
-
-os.environ.setdefault("OPENSEARCH_ENDPOINT", "<your-opensearch-endpoint>")
-
 from os_client import get_client
 from config import OPENSEARCH_INDEX
 
@@ -43,6 +40,7 @@ TEMPLATES_CLEAN = [
 TITLES_PII = ["Account Request","Wire Transfer","Lost Card Report","Loan Application","Fraud Alert","Address Change","Insurance Claim","Direct Deposit","KYC Verification","Beneficiary Update"]
 TITLES_CLEAN = ["Compliance Review","System Maintenance","Policy Update","Budget Approval","Standup Notes","Contract Renewal","Training Update","Incident Postmortem","Architecture Review","Office Relocation"]
 
+
 def rand_name():
     return random.choice(FIRST) + " " + random.choice(LAST)
 
@@ -50,8 +48,7 @@ def rand_ssn():
     return f"{random.randint(100,999)}-{random.randint(10,99)}-{random.randint(1000,9999)}"
 
 def rand_email(name):
-    local = name.lower().replace(" ", ".") + str(random.randint(1,99))
-    return local + "@" + random.choice(DOMAINS)
+    return name.lower().replace(" ", ".") + str(random.randint(1, 99)) + "@" + random.choice(DOMAINS)
 
 def rand_phone():
     return f"({random.randint(200,999)}) {random.randint(200,999)}-{random.randint(1000,9999)}"
@@ -69,8 +66,6 @@ def rand_date():
     m = random.choice(["January","February","March","April","May","June","July","August","September","October","November","December"])
     return f"{m} {random.randint(1,28)}, {random.randint(1950,2005)}"
 
-def rand_dob():
-    return rand_date()
 
 def gen_pii_doc():
     name = rand_name()
@@ -79,40 +74,36 @@ def gen_pii_doc():
     body = tpl.format(
         name=name, ssn=rand_ssn(), email=rand_email(name), phone=rand_phone(),
         addr=rand_addr(), amt=f"{random.randint(1,500)*1000:,}", acct=rand_acct(),
-        cc=rand_cc(), date=rand_date(), dob=rand_dob(), bank="First National",
+        cc=rand_cc(), date=rand_date(), dob=rand_date(), bank="First National",
         pol=rand_acct()[:8], routing=rand_acct()[:9], passport="X" + rand_acct()[:8],
-        q=random.randint(1,4), ver=f"{random.randint(1,5)}.{random.randint(0,9)}"
+        q=random.randint(1, 4), ver=f"{random.randint(1,5)}.{random.randint(0,9)}"
     )
     return {"title": title + " #" + rand_acct()[:5], "body": body}
+
 
 def gen_clean_doc():
     tpl = random.choice(TEMPLATES_CLEAN)
     title = TITLES_CLEAN[TEMPLATES_CLEAN.index(tpl)]
-    body = tpl.format(q=random.randint(1,4), ver=f"{random.randint(1,5)}.{random.randint(0,9)}")
+    body = tpl.format(q=random.randint(1, 4), ver=f"{random.randint(1,5)}.{random.randint(0,9)}")
     return {"title": title, "body": body}
+
 
 def main():
     client = get_client()
     total = 1000
     pii_count = 700
-    clean_count = 300
 
-    print(f"Generating {total} documents ({pii_count} with PII, {clean_count} clean)...")
+    print(f"Generating {total} documents ({pii_count} with PII, {total - pii_count} clean)...")
 
-    # Bulk index in batches of 50
     batch = []
     for i in range(total):
-        if i < pii_count:
-            doc = gen_pii_doc()
-        else:
-            doc = gen_clean_doc()
+        doc = gen_pii_doc() if i < pii_count else gen_clean_doc()
         batch.append(doc)
 
         if len(batch) == 50:
             body = ""
             for d in batch:
-                body += '{"index":{"_index":"' + OPENSEARCH_INDEX + '"}}\n'
-                import json
+                body += json.dumps({"index": {"_index": OPENSEARCH_INDEX}}) + "\n"
                 body += json.dumps(d) + "\n"
             client.bulk(body=body)
             print(f"  Indexed {i+1}/{total}")
@@ -120,14 +111,14 @@ def main():
 
     if batch:
         body = ""
-        import json
         for d in batch:
-            body += '{"index":{"_index":"' + OPENSEARCH_INDEX + '"}}\n'
+            body += json.dumps({"index": {"_index": OPENSEARCH_INDEX}}) + "\n"
             body += json.dumps(d) + "\n"
         client.bulk(body=body)
         print(f"  Indexed {total}/{total}")
 
     print("Done. 1000 documents indexed.")
+
 
 if __name__ == "__main__":
     main()

@@ -1,6 +1,7 @@
 # ── AWS Credentials (NEVER commit these) ─────────────────────────────────────
 .env
 .env.*
+!.env.example
 *.pem
 *.key
 credentials
