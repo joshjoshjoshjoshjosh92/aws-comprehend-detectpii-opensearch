@@ -130,8 +130,11 @@ Resources:
       GroupDescription: PII Detect EC2 instance
       VpcId: !Ref VPC
       SecurityGroupEgress:
-        - IpProtocol: -1
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
           CidrIp: 0.0.0.0/0
+          Description: HTTPS for Comprehend API, OpenSearch, pip, SSM
 
   OpenSearchSecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -164,18 +167,25 @@ Resources:
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
-              - Effect: Allow
+              - Sid: ComprehendReadOnly
+                Effect: Allow
                 Action:
                   - comprehend:DetectPiiEntities
                   - comprehend:ContainsPiiEntities
                 Resource: '*'
-              - Effect: Allow
+              - Sid: OpenSearchWrite
+                Effect: Allow
                 Action:
                   - es:ESHttpPost
                   - es:ESHttpPut
                   - es:ESHttpGet
-                  - es:ESHttpDelete
                 Resource: !Sub 'arn:aws:es:${AWS::Region}:${AWS::AccountId}:domain/pii-detect-domain/*'
+              - Sid: AuditLogging
+                Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !GetAtt AuditLogGroup.Arn
 
   EC2InstanceProfile:
     Type: AWS::IAM::InstanceProfile
@@ -210,7 +220,10 @@ Resources:
           - Effect: Allow
             Principal:
               AWS: !GetAtt EC2Role.Arn
-            Action: 'es:*'
+            Action:
+              - 'es:ESHttpPost'
+              - 'es:ESHttpPut'
+              - 'es:ESHttpGet'
             Resource: !Sub 'arn:aws:es:${AWS::Region}:${AWS::AccountId}:domain/pii-detect-domain/*'
       NodeToNodeEncryptionOptions:
         Enabled: true
@@ -219,6 +232,53 @@ Resources:
       DomainEndpointOptions:
         EnforceHTTPS: true
         TLSSecurityPolicy: Policy-Min-TLS-1-2-2019-07
+
+  # ─── Logging ─────────────────────────────────────────────────────────────────
+
+  VPCFlowLog:
+    Type: AWS::EC2::FlowLog
+    Properties:
+      ResourceId: !Ref VPC
+      ResourceType: VPC
+      TrafficType: ALL
+      LogDestinationType: cloud-watch-logs
+      LogGroupName: !Ref FlowLogGroup
+      DeliverLogsPermissionArn: !GetAtt FlowLogRole.Arn
+
+  FlowLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /pii-detect/vpc-flow-logs
+      RetentionInDays: 30
+
+  AuditLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /pii-detect/audit
+      RetentionInDays: 90
+
+  FlowLogRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: vpc-flow-logs.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: flow-log-write
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogGroups
+                  - logs:DescribeLogStreams
+                Resource: '*'
 
   # ─── EC2 Instance ────────────────────────────────────────────────────────────
 
