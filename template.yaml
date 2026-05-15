@@ -232,7 +232,9 @@ Resources:
         Statement:
           - Effect: Allow
             Principal:
-              AWS: !GetAtt EC2Role.Arn
+              AWS:
+                - !GetAtt EC2Role.Arn
+                - !If [IsServerlessMode, !GetAtt LambdaRole.Arn, !Ref 'AWS::NoValue']
             Action:
               - 'es:ESHttpPost'
               - 'es:ESHttpPut'

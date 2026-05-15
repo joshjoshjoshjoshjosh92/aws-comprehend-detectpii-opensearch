@@ -122,8 +122,9 @@ def handle_scheduled_scan(event):
 
     total_scanned = 0
     total_flagged = 0
+    max_iterations = 10  # Cap to stay within Lambda timeout budget
 
-    while True:
+    for _ in range(max_iterations):
         resp = client.search(index=OPENSEARCH_INDEX, body={**query, "size": BATCH_SIZE})
         hits = resp["hits"]["hits"]
         if not hits:
