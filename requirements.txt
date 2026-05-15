@@ -11,3 +11,6 @@ requests-aws4auth>=1.2.3
 
 # Utilities
 python-dotenv>=1.0.0
+
+# Testing
+pytest>=7.0.0

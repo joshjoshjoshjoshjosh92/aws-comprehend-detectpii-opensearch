@@ -375,4 +375,4 @@ Built in response to a customer spec-req; published to the FSI SA community via 
 
 ## License
 
-This project is intended for internal AWS use and customer-facing reference implementations. Refer to your AWS PACE program guidelines for redistribution terms.
+This library is licensed under the MIT-0 License. See the [LICENSE](LICENSE) file.
