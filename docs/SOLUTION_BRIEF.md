@@ -90,7 +90,7 @@ A serverless, cost-optimized pipeline that automatically detects and redacts PII
 - **Segment:** Financial Services Industry
 - **Asset type:** Reference Architecture + Working Implementation
 - **Reuse tracking:** GitHub repository with issue/PR workflow for adaptation tracking
-- **Author:** Joshua Oswald-Thorpe, Technical Account Manager, Financial Services
+- **Author:** Joshua Walther, Technical Account Manager, Financial Services
 
 ---
 
